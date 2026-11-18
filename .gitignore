@@ -46,3 +46,6 @@ Thumbs.db
 Desktop.ini
 .idea/
 .vscode/
+
+# 本地启动脚本的运行时产物（PID 文件与服务日志）
+/.runtime/
