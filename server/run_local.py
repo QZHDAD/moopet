@@ -26,6 +26,35 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# 仓库根：server/ 的上一级
+ROOT = os.path.dirname(HERE)
+
+
+def _load_dotenv():
+    """读仓库根的 .env（只认 KEY=VALUE，不执行内容；已存在的环境变量优先）。
+
+    部署时配置集中放 .env 一处，run_local.py 和 scripts/start_web.sh 都能直接用，
+    不必依赖启动器（nohup / 计划任务 / 服务包装器）把环境变量传进来。
+    """
+    path = os.path.join(ROOT, '.env')
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, _, val = line.partition('=')
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError:
+        pass
+
+
+_load_dotenv()
 
 PORT = int(os.environ.get('MOOPET_PORT', '8080'))
 # 默认只听本机：Linux 上 0.0.0.0 会暴露到局域网，对一个演示服务不合适
@@ -151,9 +180,34 @@ def main():
         import webbrowser
         threading.Timer(2.5, lambda: webbrowser.open(base + '/')).start()
 
-    return subprocess.call([sys.executable, '-m', 'uvicorn', 'app.main:app',
-                            '--host', HOST, '--port', str(PORT)],
-                           cwd=HERE)
+    # 可选：把**真正监听端口的进程号**写进文件，供启动器/脚本停服务用。
+    # 为什么不靠启动器的 Popen 返回值：Windows 上 venv 的 python.exe 是个转发壳，
+    # Popen 拿到的是壳的 pid，真正监听的是它的子进程；按壳的 pid 停服务会留下孤儿
+    # 继续占着端口（本地部署实测复现）。这里由服务自己写，pid 一定是对的。
+    _write_pid_file()
+
+    # 直接在**本进程**里跑 uvicorn，而不是再 spawn 一个 `python -m uvicorn`：
+    #   · 部署时常由启动器/计划任务/服务包装器拉起，多一层子进程会让"停服务"只杀掉外壳，
+    #     真正的监听进程变成孤儿继续占着端口（这次本地部署实测踩到）；
+    #   · 这样 PID 文件、任务管理器、kill/systemd 指向的都是同一个进程，停止语义可靠。
+    import uvicorn
+    uvicorn.run('app.main:app', host=HOST, port=PORT, app_dir=HERE, log_level='info')
+    return 0
+
+
+def _write_pid_file():
+    """MOOPET_PID_FILE 指定时，写入当前进程号（真实监听者）。"""
+    path = os.environ.get('MOOPET_PID_FILE')
+    if not path:
+        return
+    try:
+        d = os.path.dirname(os.path.abspath(path))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        _say('!', f'PID 文件写入失败（{path}）：{e}')
 
 
 if __name__ == '__main__':
